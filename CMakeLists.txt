@@ -33,6 +33,8 @@ project(FreeRTOS_Training C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+include(FreeRTOS_Kernel_import.cmake)
+
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(FreeRTOS_Training main.c )
@@ -46,7 +48,8 @@ pico_enable_stdio_usb(FreeRTOS_Training 1)
 
 # Add the standard library to the build
 target_link_libraries(FreeRTOS_Training
-        pico_stdlib)
+        pico_stdlib
+        FreeRTOS-Kernel-Heap4)
 
 # Add the standard include files to the build
 target_include_directories(FreeRTOS_Training PRIVATE
