@@ -37,7 +37,9 @@ include(FreeRTOS_Kernel_import.cmake)
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(FreeRTOS_Training main.c )
+add_executable(FreeRTOS_Training
+        app_init.c
+        main.c)
 
 pico_set_program_name(FreeRTOS_Training "FreeRTOS_Training")
 pico_set_program_version(FreeRTOS_Training "0.1")
