@@ -38,6 +38,7 @@ include(FreeRTOS_Kernel_import.cmake)
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(FreeRTOS_Training
+        app_font.c
         app_init.c
         main.c
         epaper/epaper_2in15g.c)

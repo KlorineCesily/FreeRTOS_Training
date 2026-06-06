@@ -10,6 +10,7 @@
 #include "pico/stdlib.h"
 #include "pico/stdio_usb.h"
 
+#include "app_font.h"
 #include "app_init.h"
 
 #include "FreeRTOS.h"
@@ -187,6 +188,82 @@ static void draw_landscape_display_rect_outline(uint32_t x0,
     fill_landscape_display_rect(x0 + width - thickness, y0, thickness, height, color);
 }
 
+static void draw_landscape_char(uint32_t x,
+                                uint32_t y,
+                                char c,
+                                uint32_t scale,
+                                epaper_2in15g_color_t foreground,
+                                epaper_2in15g_color_t background) {
+    const uint8_t *glyph = app_font5x7_get_glyph(c);
+
+    for (uint32_t column = 0; column < APP_FONT5X7_WIDTH; column++) {
+        for (uint32_t row = 0; row < APP_FONT5X7_HEIGHT; row++) {
+            const bool pixel_on = (glyph[column] & (1u << row)) != 0;
+            fill_landscape_display_rect(x + column * scale,
+                                        y + row * scale,
+                                        scale,
+                                        scale,
+                                        pixel_on ? foreground : background);
+        }
+    }
+}
+
+static uint32_t landscape_text_advance(uint32_t scale) {
+    return (APP_FONT5X7_WIDTH + 1) * scale;
+}
+
+static void draw_landscape_text(uint32_t x,
+                                uint32_t y,
+                                const char *text,
+                                uint32_t scale,
+                                epaper_2in15g_color_t foreground,
+                                epaper_2in15g_color_t background) {
+    const uint32_t advance = landscape_text_advance(scale);
+
+    while (*text != '\0') {
+        draw_landscape_char(x, y, *text, scale, foreground, background);
+        x += advance;
+        text++;
+    }
+}
+
+static void draw_landscape_text_wrapped(uint32_t x,
+                                        uint32_t y,
+                                        uint32_t max_width,
+                                        uint32_t max_lines,
+                                        const char *text,
+                                        uint32_t scale,
+                                        epaper_2in15g_color_t foreground,
+                                        epaper_2in15g_color_t background) {
+    const uint32_t advance = landscape_text_advance(scale);
+    const uint32_t line_height = (APP_FONT5X7_HEIGHT + 2) * scale;
+    const uint32_t start_x = x;
+    const uint32_t max_x = start_x + max_width;
+    uint32_t line = 0;
+
+    while ((*text != '\0') && (line < max_lines)) {
+        if ((*text == '\n') || ((x + APP_FONT5X7_WIDTH * scale) > max_x)) {
+            line++;
+            x = start_x;
+            y += line_height;
+
+            if (*text == '\n') {
+                text++;
+            }
+
+            while (*text == ' ') {
+                text++;
+            }
+
+            continue;
+        }
+
+        draw_landscape_char(x, y, *text, scale, foreground, background);
+        x += advance;
+        text++;
+    }
+}
+
 static void draw_display_test_pattern(void) {
     fill_display(EPAPER_2IN15G_WHITE);
 
@@ -211,6 +288,25 @@ static void draw_vocabulary_card_placeholder(size_t card_index) {
     fill_landscape_display_rect(22, 46, CARD_DISPLAY_WIDTH - 44, 22, EPAPER_2IN15G_YELLOW);
     draw_landscape_display_rect_outline(22, 82, 126, 50, 2, EPAPER_2IN15G_BLACK);
     draw_landscape_display_rect_outline(166, 82, 108, 50, 2, EPAPER_2IN15G_RED);
+
+    draw_landscape_text(22, 4, card->word, 3, EPAPER_2IN15G_WHITE, EPAPER_2IN15G_BLACK);
+    draw_landscape_text(24, 50, card->phonetic, 2, EPAPER_2IN15G_BLACK, EPAPER_2IN15G_YELLOW);
+    draw_landscape_text_wrapped(28,
+                                90,
+                                114,
+                                3,
+                                card->meaning,
+                                1,
+                                EPAPER_2IN15G_BLACK,
+                                EPAPER_2IN15G_WHITE);
+    draw_landscape_text_wrapped(172,
+                                90,
+                                96,
+                                3,
+                                card->note,
+                                1,
+                                EPAPER_2IN15G_RED,
+                                EPAPER_2IN15G_WHITE);
 
     const uint32_t marker_width = 20;
     const uint32_t marker_gap = 10;
