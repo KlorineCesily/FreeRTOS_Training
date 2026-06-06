@@ -34,12 +34,11 @@ typedef struct {
 
 enum {
     SAMPLE_QUEUE_LENGTH = 4,
-    DISPLAY_QUEUE_LENGTH = 2,
+    DISPLAY_QUEUE_LENGTH = 1,
     SAMPLE_EVENT_INTERVAL = 2,
     EVENT_TASK_WORK_MS = 5000,
     CONSOLE_LINE_LENGTH = 64,
     CONSOLE_POLL_MS = 20,
-    DISPLAY_REQUEST_SEND_TIMEOUT_MS = 100,
     SERIAL_CONNECT_TIMEOUT_MS = 15000,
     SERIAL_READY_DELAY_MS = 300,
     DEFAULT_TASK_STACK_WORDS = 512,
@@ -145,12 +144,11 @@ static void send_display_request(display_request_type_t type) {
         .type = type,
     };
 
-    const BaseType_t result = xQueueSend(display_queue,
-                                         &request,
-                                         pdMS_TO_TICKS(DISPLAY_REQUEST_SEND_TIMEOUT_MS));
-    log_printf("[console] screen %s request %s\r\n",
-               display_request_name(type),
-               result == pdPASS ? "queued" : "failed");
+    const BaseType_t result = xQueueOverwrite(display_queue, &request);
+    configASSERT(result == pdPASS);
+
+    log_printf("[console] screen %s request accepted (latest wins)\r\n",
+               display_request_name(type));
 }
 
 static void producer_task(void *params) {
@@ -544,7 +542,7 @@ static void startup_task(void *params) {
     const display_request_t initial_display_request = {
         .type = DISPLAY_REQUEST_TEST_PATTERN,
     };
-    const BaseType_t display_request_sent = xQueueSend(display_queue, &initial_display_request, 0);
+    const BaseType_t display_request_sent = xQueueOverwrite(display_queue, &initial_display_request);
     configASSERT(display_request_sent == pdPASS);
 
     vTaskDelete(NULL);
