@@ -38,8 +38,8 @@ include(FreeRTOS_Kernel_import.cmake)
 # Add executable. Default name is the project name, version 0.1
 
 add_executable(FreeRTOS_Training
-        app_init.c
-        main.c)
+        main.c
+        epaper/epaper_2in15g.c)
 
 pico_set_program_name(FreeRTOS_Training "FreeRTOS_Training")
 pico_set_program_version(FreeRTOS_Training "0.1")
@@ -51,12 +51,34 @@ pico_enable_stdio_usb(FreeRTOS_Training 1)
 # Add the standard library to the build
 target_link_libraries(FreeRTOS_Training
         pico_stdlib
-        FreeRTOS-Kernel-Heap4)
+        hardware_spi)
 
 # Add the standard include files to the build
 target_include_directories(FreeRTOS_Training PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/epaper
 )
 
 pico_add_extra_outputs(FreeRTOS_Training)
+
+add_executable(epaper_bringup
+        epaper/epaper_bringup.c
+        epaper/epaper_2in15g.c)
+
+pico_set_program_name(epaper_bringup "epaper_bringup")
+pico_set_program_version(epaper_bringup "0.1")
+
+pico_enable_stdio_uart(epaper_bringup 0)
+pico_enable_stdio_usb(epaper_bringup 1)
+
+target_link_libraries(epaper_bringup
+        pico_stdlib
+        hardware_spi)
+
+target_include_directories(epaper_bringup PRIVATE
+        ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/epaper
+)
+
+pico_add_extra_outputs(epaper_bringup)
 

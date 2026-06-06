@@ -2,26 +2,9 @@
 #include <string.h>
 
 #include "epaper_2in15g.h"
-#include "pico/stdio.h"
-#include "pico/stdio_usb.h"
 #include "pico/stdlib.h"
 
-enum {
-    SERIAL_CONNECT_TIMEOUT_MS = 15000,
-    SERIAL_READY_DELAY_MS = 300,
-};
-
 static uint8_t frame_buffer[EPAPER_2IN15G_BUFFER_SIZE];
-
-static void wait_for_serial_monitor(void) {
-    const absolute_time_t deadline = make_timeout_time_ms(SERIAL_CONNECT_TIMEOUT_MS);
-
-    while (!stdio_usb_connected() && (absolute_time_diff_us(get_absolute_time(), deadline) > 0)) {
-        sleep_ms(10);
-    }
-
-    sleep_ms(SERIAL_READY_DELAY_MS);
-}
 
 static void set_pixel(uint x, uint y, epaper_2in15g_color_t color) {
     if ((x >= EPAPER_2IN15G_WIDTH) || (y >= EPAPER_2IN15G_HEIGHT)) {
@@ -72,10 +55,9 @@ static void draw_test_pattern(void) {
 
 int main(void) {
     stdio_init_all();
-    wait_for_serial_monitor();
+    sleep_ms(2000);
 
-    printf("FreeRTOS_Training branch epaper bring-up\r\n");
-    printf("2.15inch e-Paper HAT+ (G), direct-plug test\r\n");
+    printf("2.15inch e-Paper HAT+ (G) bring-up\r\n");
     printf("pins: spi=spi1 mosi=%d sck=%d cs=%d dc=%d rst=%d busy=%d pwr=%d\r\n",
            EPAPER_2IN15G_PIN_MOSI,
            EPAPER_2IN15G_PIN_SCK,
@@ -85,52 +67,40 @@ int main(void) {
            EPAPER_2IN15G_PIN_BUSY,
            EPAPER_2IN15G_PIN_PWR);
     printf("refresh is slow; this demo performs one full refresh then sleeps the panel\r\n");
-    stdio_flush();
 
     epaper_2in15g_init_io();
     printf("io init done, busy=%d\r\n", epaper_2in15g_busy_level() ? 1 : 0);
-    stdio_flush();
 
     printf("init panel...\r\n");
-    stdio_flush();
     if (!epaper_2in15g_init_panel()) {
         printf("panel init timeout, busy=%d; check BUSY pin, power, and HAT seating\r\n",
                epaper_2in15g_busy_level() ? 1 : 0);
-        stdio_flush();
         while (true) {
             sleep_ms(1000);
         }
     }
     printf("panel init done, busy=%d\r\n", epaper_2in15g_busy_level() ? 1 : 0);
-    stdio_flush();
 
     printf("draw test pattern...\r\n");
     draw_test_pattern();
 
     printf("display frame, please wait about 20 seconds...\r\n");
-    stdio_flush();
     if (!epaper_2in15g_display(frame_buffer)) {
         printf("display timeout, busy=%d; check BUSY pin and SPI wiring\r\n",
                epaper_2in15g_busy_level() ? 1 : 0);
-        stdio_flush();
         while (true) {
             sleep_ms(1000);
         }
     }
     printf("display command completed, busy=%d\r\n", epaper_2in15g_busy_level() ? 1 : 0);
-    stdio_flush();
 
     printf("keep panel powered for inspection before sleep...\r\n");
-    stdio_flush();
     sleep_ms(10000);
-
     printf("sleep panel\r\n");
-    stdio_flush();
     epaper_2in15g_sleep();
 
     while (true) {
-        printf("done; reset or power-cycle the board to rerun the one-shot refresh demo\r\n");
-        stdio_flush();
+        printf("done; reset the board to rerun the one-shot refresh demo\r\n");
         sleep_ms(10000);
     }
 }
