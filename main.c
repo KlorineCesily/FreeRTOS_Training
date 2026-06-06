@@ -5,6 +5,8 @@
 #include <string.h>
 
 #include "epaper_2in15g.h"
+#include "pico/error.h"
+#include "pico/stdio.h"
 #include "pico/stdlib.h"
 #include "pico/stdio_usb.h"
 
@@ -22,6 +24,7 @@ typedef struct {
 
 typedef enum {
     DISPLAY_REQUEST_TEST_PATTERN,
+    DISPLAY_REQUEST_CLEAR_WHITE,
     DISPLAY_REQUEST_SLEEP,
 } display_request_type_t;
 
@@ -34,6 +37,9 @@ enum {
     DISPLAY_QUEUE_LENGTH = 2,
     SAMPLE_EVENT_INTERVAL = 2,
     EVENT_TASK_WORK_MS = 5000,
+    CONSOLE_LINE_LENGTH = 64,
+    CONSOLE_POLL_MS = 20,
+    DISPLAY_REQUEST_SEND_TIMEOUT_MS = 100,
     SERIAL_CONNECT_TIMEOUT_MS = 15000,
     SERIAL_READY_DELAY_MS = 300,
     DEFAULT_TASK_STACK_WORDS = 512,
@@ -43,10 +49,12 @@ enum {
 static QueueHandle_t sample_queue = NULL;
 static QueueHandle_t display_queue = NULL;
 static SemaphoreHandle_t log_mutex = NULL;
+static volatile bool detail_logs_enabled = true;
 static TaskHandle_t producer_task_handle = NULL;
 static TaskHandle_t consumer_task_handle = NULL;
 static TaskHandle_t event_task_handle = NULL;
 static TaskHandle_t ui_task_handle = NULL;
+static TaskHandle_t console_task_handle = NULL;
 static TaskHandle_t monitor_task_handle = NULL;
 static uint8_t display_frame_buffer[EPAPER_2IN15G_BUFFER_SIZE];
 
@@ -119,6 +127,32 @@ static void draw_display_test_pattern(void) {
                       EPAPER_2IN15G_RED);
 }
 
+static const char *display_request_name(display_request_type_t type) {
+    switch (type) {
+    case DISPLAY_REQUEST_TEST_PATTERN:
+        return "test";
+    case DISPLAY_REQUEST_CLEAR_WHITE:
+        return "clear";
+    case DISPLAY_REQUEST_SLEEP:
+        return "sleep";
+    }
+
+    return "unknown";
+}
+
+static void send_display_request(display_request_type_t type) {
+    const display_request_t request = {
+        .type = type,
+    };
+
+    const BaseType_t result = xQueueSend(display_queue,
+                                         &request,
+                                         pdMS_TO_TICKS(DISPLAY_REQUEST_SEND_TIMEOUT_MS));
+    log_printf("[console] screen %s request %s\r\n",
+               display_request_name(type),
+               result == pdPASS ? "queued" : "failed");
+}
+
 static void producer_task(void *params) {
     (void)params;
 
@@ -132,9 +166,11 @@ static void producer_task(void *params) {
         };
 
         if (xQueueSend(sample_queue, &message, pdMS_TO_TICKS(100)) == pdPASS) {
-            log_printf("[producer] seq=%lu tick=%lu\r\n",
-                       (unsigned long)message.sequence,
-                       (unsigned long)message.produced_at);
+            if (detail_logs_enabled) {
+                log_printf("[producer] seq=%lu tick=%lu\r\n",
+                           (unsigned long)message.sequence,
+                           (unsigned long)message.produced_at);
+            }
         } else {
             log_printf("[producer] queue full, drop seq=%lu\r\n",
                        (unsigned long)message.sequence);
@@ -156,17 +192,21 @@ static void consumer_task(void *params) {
             const TickType_t now = xTaskGetTickCount();
             processed_count++;
 
-            log_printf("[consumer] seq=%lu produced_at=%lu latency=%lu\r\n",
-                       (unsigned long)message.sequence,
-                       (unsigned long)message.produced_at,
-                       (unsigned long)(now - message.produced_at));
+            if (detail_logs_enabled) {
+                log_printf("[consumer] seq=%lu produced_at=%lu latency=%lu\r\n",
+                           (unsigned long)message.sequence,
+                           (unsigned long)message.produced_at,
+                           (unsigned long)(now - message.produced_at));
+            }
 
             if ((processed_count % SAMPLE_EVENT_INTERVAL) == 0) {
                 const BaseType_t result = xTaskNotifyGive(event_task_handle);
                 configASSERT(result == pdPASS);
 
-                log_printf("[consumer] notified event task at sample=%lu\r\n",
-                           (unsigned long)processed_count);
+                if (detail_logs_enabled) {
+                    log_printf("[consumer] notified event task at sample=%lu\r\n",
+                               (unsigned long)processed_count);
+                }
             }
         }
     }
@@ -182,18 +222,38 @@ static void event_task(void *params) {
 
         if (pending_before_take > 0) {
             handled_batches++;
-            log_printf("[event] batch=%lu samples_reported=%lu pending_before_take=%lu\r\n",
-                       (unsigned long)handled_batches,
-                       (unsigned long)(handled_batches * SAMPLE_EVENT_INTERVAL),
-                       (unsigned long)pending_before_take);
+            if (detail_logs_enabled) {
+                log_printf("[event] batch=%lu samples_reported=%lu pending_before_take=%lu\r\n",
+                           (unsigned long)handled_batches,
+                           (unsigned long)(handled_batches * SAMPLE_EVENT_INTERVAL),
+                           (unsigned long)pending_before_take);
+            }
 
             vTaskDelay(pdMS_TO_TICKS(EVENT_TASK_WORK_MS));
         }
     }
 }
 
+static bool prepare_display_panel(void) {
+    epaper_2in15g_init_io();
+    log_printf("[ui] io ready busy=%lu\r\n",
+               (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+
+    if (!epaper_2in15g_init_panel()) {
+        log_printf("[ui] panel init timeout busy=%lu\r\n",
+                   (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+        return false;
+    }
+
+    log_printf("[ui] panel ready busy=%lu\r\n",
+               (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+    return true;
+}
+
 static void ui_task(void *params) {
     (void)params;
+
+    bool panel_awake = false;
 
     while (true) {
         display_request_t request;
@@ -205,18 +265,12 @@ static void ui_task(void *params) {
         switch (request.type) {
         case DISPLAY_REQUEST_TEST_PATTERN:
             log_printf("[ui] test pattern requested\r\n");
-            epaper_2in15g_init_io();
-            log_printf("[ui] io ready busy=%lu\r\n",
-                       (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
 
-            if (!epaper_2in15g_init_panel()) {
-                log_printf("[ui] panel init timeout busy=%lu\r\n",
-                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+            if (!prepare_display_panel()) {
                 break;
             }
 
-            log_printf("[ui] panel ready busy=%lu\r\n",
-                       (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+            panel_awake = true;
             draw_display_test_pattern();
             log_printf("[ui] display refresh start\r\n");
 
@@ -225,6 +279,7 @@ static void ui_task(void *params) {
                            (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
                 vTaskDelay(pdMS_TO_TICKS(10000));
                 epaper_2in15g_sleep();
+                panel_awake = false;
                 log_printf("[ui] panel sleep\r\n");
             } else {
                 log_printf("[ui] display timeout busy=%lu\r\n",
@@ -232,10 +287,172 @@ static void ui_task(void *params) {
             }
             break;
 
-        case DISPLAY_REQUEST_SLEEP:
-            epaper_2in15g_sleep();
-            log_printf("[ui] panel sleep requested\r\n");
+        case DISPLAY_REQUEST_CLEAR_WHITE:
+            log_printf("[ui] clear white requested\r\n");
+
+            if (!prepare_display_panel()) {
+                break;
+            }
+
+            panel_awake = true;
+            log_printf("[ui] clear refresh start\r\n");
+
+            if (epaper_2in15g_clear(EPAPER_2IN15G_WHITE)) {
+                log_printf("[ui] clear refresh done busy=%lu\r\n",
+                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+                vTaskDelay(pdMS_TO_TICKS(10000));
+                epaper_2in15g_sleep();
+                panel_awake = false;
+                log_printf("[ui] panel sleep\r\n");
+            } else {
+                log_printf("[ui] clear timeout busy=%lu\r\n",
+                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
+            }
             break;
+
+        case DISPLAY_REQUEST_SLEEP:
+            if (panel_awake) {
+                epaper_2in15g_sleep();
+                panel_awake = false;
+                log_printf("[ui] panel sleep requested\r\n");
+            } else {
+                log_printf("[ui] panel already asleep\r\n");
+            }
+            break;
+        }
+    }
+}
+
+static void print_console_help(void) {
+    log_printf("[console] commands: help | stats | quiet | verbose | screen test | screen clear | screen sleep (send with LF/CRLF)\r\n");
+}
+
+static void print_console_stats(void) {
+    log_printf("[console] tick=%lu detail_logs=%lu queue=%lu/%lu display_queue=%lu/%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu\r\n",
+               (unsigned long)xTaskGetTickCount(),
+               (unsigned long)(detail_logs_enabled ? 1 : 0),
+               (unsigned long)uxQueueMessagesWaiting(sample_queue),
+               (unsigned long)uxQueueSpacesAvailable(sample_queue),
+               (unsigned long)uxQueueMessagesWaiting(display_queue),
+               (unsigned long)uxQueueSpacesAvailable(display_queue),
+               (unsigned long)uxTaskGetStackHighWaterMark(producer_task_handle),
+               (unsigned long)uxTaskGetStackHighWaterMark(consumer_task_handle),
+               (unsigned long)uxTaskGetStackHighWaterMark(event_task_handle),
+               (unsigned long)uxTaskGetStackHighWaterMark(ui_task_handle),
+               (unsigned long)uxTaskGetStackHighWaterMark(console_task_handle),
+               (unsigned long)uxTaskGetStackHighWaterMark(monitor_task_handle));
+}
+
+static void handle_screen_command(const char *args) {
+    while ((*args == ' ') || (*args == '\t')) {
+        args++;
+    }
+
+    if (strcmp(args, "test") == 0) {
+        send_display_request(DISPLAY_REQUEST_TEST_PATTERN);
+        return;
+    }
+
+    if (strcmp(args, "clear") == 0) {
+        send_display_request(DISPLAY_REQUEST_CLEAR_WHITE);
+        return;
+    }
+
+    if (strcmp(args, "sleep") == 0) {
+        send_display_request(DISPLAY_REQUEST_SLEEP);
+        return;
+    }
+
+    log_printf("[console] usage: screen test | screen clear | screen sleep\r\n");
+}
+
+static void handle_console_command(char *line) {
+    while ((*line == ' ') || (*line == '\t')) {
+        line++;
+    }
+
+    if (*line == '\0') {
+        return;
+    }
+
+    if (strcmp(line, "help") == 0) {
+        print_console_help();
+        return;
+    }
+
+    if (strcmp(line, "stats") == 0) {
+        print_console_stats();
+        return;
+    }
+
+    if (strcmp(line, "quiet") == 0) {
+        detail_logs_enabled = false;
+        log_printf("[console] detail logs disabled; console and ui output remain visible\r\n");
+        return;
+    }
+
+    if (strcmp(line, "verbose") == 0) {
+        detail_logs_enabled = true;
+        log_printf("[console] detail logs enabled\r\n");
+        return;
+    }
+
+    if (strncmp(line, "screen", 6) == 0) {
+        const char next = line[6];
+
+        if ((next == '\0') || (next == ' ') || (next == '\t')) {
+            handle_screen_command(line + 6);
+            return;
+        }
+    }
+
+    log_printf("[console] unknown command: %s\r\n", line);
+    print_console_help();
+}
+
+static void console_task(void *params) {
+    (void)params;
+
+    char line[CONSOLE_LINE_LENGTH] = { 0 };
+    size_t length = 0;
+
+    print_console_help();
+
+    while (true) {
+        const int input = getchar_timeout_us(0);
+
+        if (input == PICO_ERROR_TIMEOUT) {
+            vTaskDelay(pdMS_TO_TICKS(CONSOLE_POLL_MS));
+            continue;
+        }
+
+        if ((input == '\r') || (input == '\n')) {
+            line[length] = '\0';
+            handle_console_command(line);
+            length = 0;
+            line[0] = '\0';
+            continue;
+        }
+
+        if ((input == '\b') || (input == 0x7f)) {
+            if (length > 0) {
+                length--;
+                line[length] = '\0';
+            }
+
+            continue;
+        }
+
+        if ((input < 0x20) || (input > 0x7e)) {
+            continue;
+        }
+
+        if (length < (CONSOLE_LINE_LENGTH - 1)) {
+            line[length++] = (char)input;
+        } else {
+            length = 0;
+            line[0] = '\0';
+            log_printf("[console] line too long, dropped\r\n");
         }
     }
 }
@@ -244,12 +461,18 @@ static void monitor_task(void *params) {
     (void)params;
 
     while (true) {
-        log_printf("[monitor] tick=%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_m=%lu queue=%lu/%lu display_queue=%lu/%lu notify=task-local\r\n",
+        if (!detail_logs_enabled) {
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+
+        log_printf("[monitor] tick=%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu queue=%lu/%lu display_queue=%lu/%lu notify=task-local\r\n",
                    (unsigned long)xTaskGetTickCount(),
                    (unsigned long)uxTaskGetStackHighWaterMark(producer_task_handle),
                    (unsigned long)uxTaskGetStackHighWaterMark(consumer_task_handle),
                    (unsigned long)uxTaskGetStackHighWaterMark(event_task_handle),
                    (unsigned long)uxTaskGetStackHighWaterMark(ui_task_handle),
+                   (unsigned long)uxTaskGetStackHighWaterMark(console_task_handle),
                    (unsigned long)uxTaskGetStackHighWaterMark(monitor_task_handle),
                    (unsigned long)uxQueueMessagesWaiting(sample_queue),
                    (unsigned long)uxQueueSpacesAvailable(sample_queue),
@@ -302,6 +525,11 @@ static void startup_task(void *params) {
                          UI_TASK_STACK_WORDS,
                          tskIDLE_PRIORITY + 1,
                          &ui_task_handle);
+    create_task_or_panic(console_task,
+                         "console",
+                         DEFAULT_TASK_STACK_WORDS,
+                         tskIDLE_PRIORITY + 1,
+                         &console_task_handle);
     create_task_or_panic(consumer_task,
                          "consumer",
                          DEFAULT_TASK_STACK_WORDS,
