@@ -91,11 +91,13 @@ ui_task
 | --- | --- | --- |
 | `help` | 打印命令列表 | 验证 CLI 在线 |
 | `stats` | 打印 tick、队列、栈余量 | 观察系统状态 |
-| `quiet` | 关闭 producer / consumer / event / monitor 细节日志 | 方便观察屏幕命令 |
-| `verbose` | 恢复细节日志 | 回到完整观察模式 |
+| `diag off` | 关闭 producer / consumer / event / monitor 诊断日志 | 默认状态，方便观察屏幕命令 |
+| `diag on` | 打开 producer / consumer / event / monitor 诊断日志 | 需要观察教学任务时使用 |
 | `screen test` | 请求刷新四色测试图 | 通过 `display_queue` 进入 `ui_task` |
 | `screen clear` | 请求全白清屏 | 同样走 `display_queue` |
 | `screen sleep` | 请求屏幕进入 sleep | 如果已睡眠会提示 already asleep |
+
+`quiet` 和 `verbose` 暂时保留为兼容别名，分别等价于 `diag off` 和 `diag on`。主线默认关闭诊断日志，避免教学阶段的 sample queue 输出长期占用串口窗口。
 
 已实测现象：
 

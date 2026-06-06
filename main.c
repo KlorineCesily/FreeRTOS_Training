@@ -49,7 +49,7 @@ enum {
 static QueueHandle_t sample_queue = NULL;
 static QueueHandle_t display_queue = NULL;
 static SemaphoreHandle_t log_mutex = NULL;
-static volatile bool detail_logs_enabled = true;
+static volatile bool detail_logs_enabled = false;
 static TaskHandle_t producer_task_handle = NULL;
 static TaskHandle_t consumer_task_handle = NULL;
 static TaskHandle_t event_task_handle = NULL;
@@ -324,7 +324,7 @@ static void ui_task(void *params) {
 }
 
 static void print_console_help(void) {
-    log_printf("[console] commands: help | stats | quiet | verbose | screen test | screen clear | screen sleep (send with LF/CRLF)\r\n");
+    log_printf("[console] commands: help | stats | diag on | diag off | screen test | screen clear | screen sleep (send with LF/CRLF)\r\n");
 }
 
 static void print_console_stats(void) {
@@ -385,15 +385,15 @@ static void handle_console_command(char *line) {
         return;
     }
 
-    if (strcmp(line, "quiet") == 0) {
+    if ((strcmp(line, "diag off") == 0) || (strcmp(line, "quiet") == 0)) {
         detail_logs_enabled = false;
-        log_printf("[console] detail logs disabled; console and ui output remain visible\r\n");
+        log_printf("[console] diagnostic logs disabled; console and ui output remain visible\r\n");
         return;
     }
 
-    if (strcmp(line, "verbose") == 0) {
+    if ((strcmp(line, "diag on") == 0) || (strcmp(line, "verbose") == 0)) {
         detail_logs_enabled = true;
-        log_printf("[console] detail logs enabled\r\n");
+        log_printf("[console] diagnostic logs enabled\r\n");
         return;
     }
 
