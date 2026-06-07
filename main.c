@@ -4,14 +4,13 @@
 #include <stdbool.h>
 #include <string.h>
 
-#include "epaper_2in15g.h"
 #include "pico/error.h"
 #include "pico/stdio.h"
 #include "pico/stdlib.h"
 #include "pico/stdio_usb.h"
 
 #include "app_card.h"
-#include "app_draw.h"
+#include "app_display.h"
 #include "app_init.h"
 
 #include "FreeRTOS.h"
@@ -24,21 +23,8 @@ typedef struct {
     TickType_t produced_at;
 } sample_message_t;
 
-typedef enum {
-    DISPLAY_REQUEST_TEST_PATTERN,
-    DISPLAY_REQUEST_CLEAR_WHITE,
-    DISPLAY_REQUEST_SLEEP,
-    DISPLAY_REQUEST_CARD_SHOW,
-} display_request_type_t;
-
-typedef struct {
-    display_request_type_t type;
-    size_t card_index;
-} display_request_t;
-
 enum {
     SAMPLE_QUEUE_LENGTH = 4,
-    DISPLAY_QUEUE_LENGTH = 1,
     SAMPLE_EVENT_INTERVAL = 2,
     EVENT_TASK_WORK_MS = 5000,
     CONSOLE_LINE_LENGTH = 64,
@@ -50,7 +36,6 @@ enum {
 };
 
 static QueueHandle_t sample_queue = NULL;
-static QueueHandle_t display_queue = NULL;
 static SemaphoreHandle_t log_mutex = NULL;
 static volatile bool detail_logs_enabled = false;
 static TaskHandle_t producer_task_handle = NULL;
@@ -59,7 +44,6 @@ static TaskHandle_t event_task_handle = NULL;
 static TaskHandle_t ui_task_handle = NULL;
 static TaskHandle_t console_task_handle = NULL;
 static TaskHandle_t monitor_task_handle = NULL;
-static uint8_t display_frame_buffer[EPAPER_2IN15G_BUFFER_SIZE];
 
 static void create_task_or_panic(TaskFunction_t task_code,
                                  const char *name,
@@ -82,49 +66,6 @@ static void log_printf(const char *format, ...) {
 
         xSemaphoreGive(log_mutex);
     }
-}
-
-static const char *display_request_name(display_request_type_t type) {
-    switch (type) {
-    case DISPLAY_REQUEST_TEST_PATTERN:
-        return "test";
-    case DISPLAY_REQUEST_CLEAR_WHITE:
-        return "clear";
-    case DISPLAY_REQUEST_SLEEP:
-        return "sleep";
-    case DISPLAY_REQUEST_CARD_SHOW:
-        return "card show";
-    }
-
-    return "unknown";
-}
-
-static void send_display_request(display_request_type_t type) {
-    const display_request_t request = {
-        .type = type,
-        .card_index = 0,
-    };
-
-    const BaseType_t result = xQueueOverwrite(display_queue, &request);
-    configASSERT(result == pdPASS);
-
-    log_printf("[console] display %s request accepted (latest wins)\r\n",
-               display_request_name(type));
-}
-
-static void send_card_display_request(const char *command_name, size_t card_index) {
-    const display_request_t request = {
-        .type = DISPLAY_REQUEST_CARD_SHOW,
-        .card_index = card_index,
-    };
-
-    const BaseType_t result = xQueueOverwrite(display_queue, &request);
-    configASSERT(result == pdPASS);
-
-    log_printf("[console] %s request accepted card=%lu/%lu (latest wins)\r\n",
-               command_name,
-               (unsigned long)(card_index + 1),
-               (unsigned long)app_card_count());
 }
 
 static void producer_task(void *params) {
@@ -208,135 +149,6 @@ static void event_task(void *params) {
     }
 }
 
-static bool prepare_display_panel(void) {
-    epaper_2in15g_init_io();
-    log_printf("[ui] io ready busy=%lu\r\n",
-               (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-
-    if (!epaper_2in15g_init_panel()) {
-        log_printf("[ui] panel init timeout busy=%lu\r\n",
-                   (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-        return false;
-    }
-
-    log_printf("[ui] panel ready busy=%lu\r\n",
-               (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-    return true;
-}
-
-static void refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
-    const vocabulary_card_t *card = app_card_get(card_index);
-
-    log_printf("[ui] card %lu/%lu word=%s %s\r\n",
-               (unsigned long)(card_index + 1),
-               (unsigned long)app_card_count(),
-               card->word,
-               card->phonetic);
-    log_printf("[ui] meaning=%s\r\n", card->meaning);
-    log_printf("[ui] note=%s\r\n", card->note);
-    log_printf("[ui] example=%s\r\n", card->example);
-
-    if (!prepare_display_panel()) {
-        return;
-    }
-
-    *panel_awake = true;
-    app_draw_vocabulary_card(display_frame_buffer, card, card_index, app_card_count());
-    log_printf("[ui] card refresh start\r\n");
-
-    if (epaper_2in15g_display(display_frame_buffer)) {
-        log_printf("[ui] card refresh done busy=%lu\r\n",
-                   (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-        vTaskDelay(pdMS_TO_TICKS(10000));
-        epaper_2in15g_sleep();
-        *panel_awake = false;
-        log_printf("[ui] panel sleep\r\n");
-    } else {
-        log_printf("[ui] card refresh timeout busy=%lu\r\n",
-                   (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-    }
-}
-
-static void ui_task(void *params) {
-    (void)params;
-
-    bool panel_awake = false;
-    size_t current_card_index = 0;
-
-    while (true) {
-        display_request_t request;
-
-        if (xQueueReceive(display_queue, &request, portMAX_DELAY) != pdPASS) {
-            continue;
-        }
-
-        switch (request.type) {
-        case DISPLAY_REQUEST_TEST_PATTERN:
-            log_printf("[ui] test pattern requested\r\n");
-
-            if (!prepare_display_panel()) {
-                break;
-            }
-
-            panel_awake = true;
-            app_draw_test_pattern(display_frame_buffer);
-            log_printf("[ui] display refresh start\r\n");
-
-            if (epaper_2in15g_display(display_frame_buffer)) {
-                log_printf("[ui] display refresh done busy=%lu\r\n",
-                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-                vTaskDelay(pdMS_TO_TICKS(10000));
-                epaper_2in15g_sleep();
-                panel_awake = false;
-                log_printf("[ui] panel sleep\r\n");
-            } else {
-                log_printf("[ui] display timeout busy=%lu\r\n",
-                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-            }
-            break;
-
-        case DISPLAY_REQUEST_CLEAR_WHITE:
-            log_printf("[ui] clear white requested\r\n");
-
-            if (!prepare_display_panel()) {
-                break;
-            }
-
-            panel_awake = true;
-            log_printf("[ui] clear refresh start\r\n");
-
-            if (epaper_2in15g_clear(EPAPER_2IN15G_WHITE)) {
-                log_printf("[ui] clear refresh done busy=%lu\r\n",
-                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-                vTaskDelay(pdMS_TO_TICKS(10000));
-                epaper_2in15g_sleep();
-                panel_awake = false;
-                log_printf("[ui] panel sleep\r\n");
-            } else {
-                log_printf("[ui] clear timeout busy=%lu\r\n",
-                           (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
-            }
-            break;
-
-        case DISPLAY_REQUEST_SLEEP:
-            if (panel_awake) {
-                epaper_2in15g_sleep();
-                panel_awake = false;
-                log_printf("[ui] panel sleep requested\r\n");
-            } else {
-                log_printf("[ui] panel already asleep\r\n");
-            }
-            break;
-
-        case DISPLAY_REQUEST_CARD_SHOW:
-            current_card_index = request.card_index % app_card_count();
-            log_printf("[ui] card show requested\r\n");
-            refresh_vocabulary_card(current_card_index, &panel_awake);
-            break;
-        }
-    }
-}
-
 static void print_console_help(void) {
     log_printf("[console] commands: help | stats | diag on/off | screen test/clear/sleep | card show/next/prev (LF/CRLF)\r\n");
 }
@@ -347,8 +159,8 @@ static void print_console_stats(void) {
                (unsigned long)(detail_logs_enabled ? 1 : 0),
                (unsigned long)uxQueueMessagesWaiting(sample_queue),
                (unsigned long)uxQueueSpacesAvailable(sample_queue),
-               (unsigned long)uxQueueMessagesWaiting(display_queue),
-               (unsigned long)uxQueueSpacesAvailable(display_queue),
+               (unsigned long)app_display_queue_messages_waiting(),
+               (unsigned long)app_display_queue_spaces_available(),
                (unsigned long)uxTaskGetStackHighWaterMark(producer_task_handle),
                (unsigned long)uxTaskGetStackHighWaterMark(consumer_task_handle),
                (unsigned long)uxTaskGetStackHighWaterMark(event_task_handle),
@@ -363,17 +175,17 @@ static void handle_screen_command(const char *args) {
     }
 
     if (strcmp(args, "test") == 0) {
-        send_display_request(DISPLAY_REQUEST_TEST_PATTERN);
+        app_display_request_test_pattern();
         return;
     }
 
     if (strcmp(args, "clear") == 0) {
-        send_display_request(DISPLAY_REQUEST_CLEAR_WHITE);
+        app_display_request_clear_white();
         return;
     }
 
     if (strcmp(args, "sleep") == 0) {
-        send_display_request(DISPLAY_REQUEST_SLEEP);
+        app_display_request_sleep();
         return;
     }
 
@@ -388,19 +200,19 @@ static void handle_card_command(const char *args) {
     }
 
     if (strcmp(args, "show") == 0) {
-        send_card_display_request("card show", target_card_index);
+        app_display_request_card("card show", target_card_index);
         return;
     }
 
     if (strcmp(args, "next") == 0) {
         target_card_index = app_card_next(target_card_index);
-        send_card_display_request("card next", target_card_index);
+        app_display_request_card("card next", target_card_index);
         return;
     }
 
     if (strcmp(args, "prev") == 0) {
         target_card_index = app_card_prev(target_card_index);
-        send_card_display_request("card prev", target_card_index);
+        app_display_request_card("card prev", target_card_index);
         return;
     }
 
@@ -526,8 +338,8 @@ static void monitor_task(void *params) {
                    (unsigned long)uxTaskGetStackHighWaterMark(monitor_task_handle),
                    (unsigned long)uxQueueMessagesWaiting(sample_queue),
                    (unsigned long)uxQueueSpacesAvailable(sample_queue),
-                   (unsigned long)uxQueueMessagesWaiting(display_queue),
-                   (unsigned long)uxQueueSpacesAvailable(display_queue));
+                   (unsigned long)app_display_queue_messages_waiting(),
+                   (unsigned long)app_display_queue_spaces_available());
 
         vTaskDelay(pdMS_TO_TICKS(2000));
     }
@@ -557,8 +369,7 @@ static void startup_task(void *params) {
     sample_queue = xQueueCreate(SAMPLE_QUEUE_LENGTH, sizeof(sample_message_t));
     configASSERT(sample_queue != NULL);
 
-    display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(display_request_t));
-    configASSERT(display_queue != NULL);
+    app_display_init(log_printf);
 
     create_task_or_panic(producer_task,
                          "producer",
@@ -570,7 +381,7 @@ static void startup_task(void *params) {
                          DEFAULT_TASK_STACK_WORDS,
                          tskIDLE_PRIORITY + 1,
                          &event_task_handle);
-    create_task_or_panic(ui_task,
+    create_task_or_panic(app_display_task,
                          "ui",
                          UI_TASK_STACK_WORDS,
                          tskIDLE_PRIORITY + 1,
@@ -591,11 +402,7 @@ static void startup_task(void *params) {
                          tskIDLE_PRIORITY + 1,
                          &monitor_task_handle);
 
-    const display_request_t initial_display_request = {
-        .type = DISPLAY_REQUEST_TEST_PATTERN,
-    };
-    const BaseType_t display_request_sent = xQueueOverwrite(display_queue, &initial_display_request);
-    configASSERT(display_request_sent == pdPASS);
+    app_display_request_test_pattern();
 
     vTaskDelete(NULL);
 }
