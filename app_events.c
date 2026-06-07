@@ -24,6 +24,18 @@ void app_events_clear_bits(EventBits_t bits) {
     (void)xEventGroupClearBits(system_events, bits);
 }
 
+EventBits_t app_events_wait_bits(EventBits_t bits_to_wait_for,
+                                 BaseType_t clear_on_exit,
+                                 BaseType_t wait_for_all_bits,
+                                 TickType_t ticks_to_wait) {
+    configASSERT(system_events != NULL);
+    return xEventGroupWaitBits(system_events,
+                               bits_to_wait_for,
+                               clear_on_exit,
+                               wait_for_all_bits,
+                               ticks_to_wait);
+}
+
 void app_events_set_diag_enabled(bool enabled) {
     if (enabled) {
         app_events_set_bits(APP_EVENT_DIAG_ENABLED);
