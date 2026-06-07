@@ -27,8 +27,20 @@ enum {
 };
 
 static QueueHandle_t display_queue = NULL;
+static TaskHandle_t display_task_handle = NULL;
 static app_display_log_fn_t display_log = NULL;
 static uint8_t display_frame_buffer[EPAPER_2IN15G_BUFFER_SIZE];
+
+static void display_task(void *params);
+
+static void create_task_or_panic(TaskFunction_t task_code,
+                                 const char *name,
+                                 configSTACK_DEPTH_TYPE stack_depth,
+                                 UBaseType_t priority,
+                                 TaskHandle_t *task_handle) {
+    const BaseType_t result = xTaskCreate(task_code, name, stack_depth, NULL, priority, task_handle);
+    configASSERT(result == pdPASS);
+}
 
 static const char *display_request_name(display_request_type_t type) {
     switch (type) {
@@ -111,10 +123,22 @@ static void refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
 
 void app_display_init(app_display_log_fn_t log_fn) {
     configASSERT(log_fn != NULL);
+    configASSERT(display_queue == NULL);
 
     display_log = log_fn;
     display_queue = xQueueCreate(DISPLAY_QUEUE_LENGTH, sizeof(display_request_t));
     configASSERT(display_queue != NULL);
+}
+
+void app_display_start(configSTACK_DEPTH_TYPE stack_depth, UBaseType_t priority) {
+    configASSERT(display_queue != NULL);
+    configASSERT(display_task_handle == NULL);
+
+    create_task_or_panic(display_task,
+                         "ui",
+                         stack_depth,
+                         priority,
+                         &display_task_handle);
 }
 
 void app_display_request_test_pattern(void) {
@@ -156,7 +180,12 @@ UBaseType_t app_display_queue_spaces_available(void) {
     return uxQueueSpacesAvailable(display_queue);
 }
 
-void app_display_task(void *params) {
+UBaseType_t app_display_stack_high_water_mark(void) {
+    configASSERT(display_task_handle != NULL);
+    return uxTaskGetStackHighWaterMark(display_task_handle);
+}
+
+static void display_task(void *params) {
     (void)params;
 
     bool panel_awake = false;

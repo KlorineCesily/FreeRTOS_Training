@@ -39,10 +39,14 @@ include(FreeRTOS_Kernel_import.cmake)
 
 add_executable(FreeRTOS_Training
         app_card.c
+        app_console.c
         app_display.c
         app_draw.c
         app_font.c
         app_init.c
+        app_log.c
+        app_monitor.c
+        app_sample.c
         main.c
         epaper/epaper_2in15g.c)
 
