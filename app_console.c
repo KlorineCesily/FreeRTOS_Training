@@ -8,10 +8,9 @@
 
 #include "app_card.h"
 #include "app_display.h"
-#include "app_events.h"
 #include "app_log.h"
-#include "app_monitor.h"
 #include "app_sample.h"
+#include "app_system_stats.h"
 
 enum {
     CONSOLE_LINE_LENGTH = 64,
@@ -34,24 +33,8 @@ static void print_console_help(void) {
 }
 
 static void print_console_stats(void) {
-    const EventBits_t event_bits = app_events_get_bits();
-
-    app_log_printf("[console] tick=%lu events=0x%lx busy=%lu dirty=%lu diag=%lu queue=%lu/%lu display_queue=%lu/%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu\r\n",
-                   (unsigned long)xTaskGetTickCount(),
-                   (unsigned long)event_bits,
-                   (unsigned long)((event_bits & APP_EVENT_DISPLAY_BUSY) ? 1 : 0),
-                   (unsigned long)((event_bits & APP_EVENT_CARD_DIRTY) ? 1 : 0),
-                   (unsigned long)((event_bits & APP_EVENT_DIAG_ENABLED) ? 1 : 0),
-                   (unsigned long)app_sample_queue_messages_waiting(),
-                   (unsigned long)app_sample_queue_spaces_available(),
-                   (unsigned long)app_display_queue_messages_waiting(),
-                   (unsigned long)app_display_queue_spaces_available(),
-                   (unsigned long)app_sample_producer_stack_high_water_mark(),
-                   (unsigned long)app_sample_consumer_stack_high_water_mark(),
-                   (unsigned long)app_sample_event_stack_high_water_mark(),
-                   (unsigned long)app_display_stack_high_water_mark(),
-                   (unsigned long)app_console_stack_high_water_mark(),
-                   (unsigned long)app_monitor_stack_high_water_mark());
+    app_system_stats_print_summary("console");
+    app_system_stats_print_tasks("console");
 }
 
 static void skip_spaces(const char **text) {

@@ -48,6 +48,7 @@ add_executable(FreeRTOS_Training
         app_log.c
         app_monitor.c
         app_sample.c
+        app_system_stats.c
         main.c
         epaper/epaper_2in15g.c)
 
