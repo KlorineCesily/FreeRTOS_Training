@@ -5,6 +5,7 @@
 
 #include "app_card.h"
 #include "app_draw.h"
+#include "app_events.h"
 #include "epaper_2in15g.h"
 
 #include "queue.h"
@@ -20,6 +21,7 @@ typedef enum {
 typedef struct {
     display_request_type_t type;
     size_t card_index;
+    uint32_t card_request_generation;
 } display_request_t;
 
 enum {
@@ -30,6 +32,7 @@ static QueueHandle_t display_queue = NULL;
 static TaskHandle_t display_task_handle = NULL;
 static app_display_log_fn_t display_log = NULL;
 static uint8_t display_frame_buffer[EPAPER_2IN15G_BUFFER_SIZE];
+static volatile uint32_t latest_card_request_generation = 0;
 
 static void display_task(void *params);
 
@@ -61,6 +64,7 @@ static void send_display_request(display_request_type_t type) {
     const display_request_t request = {
         .type = type,
         .card_index = 0,
+        .card_request_generation = 0,
     };
 
     configASSERT(display_queue != NULL);
@@ -88,7 +92,7 @@ static bool prepare_display_panel(void) {
     return true;
 }
 
-static void refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
+static bool refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
     const vocabulary_card_t *card = app_card_get(card_index);
 
     display_log("[ui] card %lu/%lu word=%s %s\r\n",
@@ -100,15 +104,20 @@ static void refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
     display_log("[ui] note=%s\r\n", card->note);
     display_log("[ui] example=%s\r\n", card->example);
 
+    app_events_set_bits(APP_EVENT_DISPLAY_BUSY);
+
     if (!prepare_display_panel()) {
-        return;
+        app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
+        return false;
     }
 
     *panel_awake = true;
     app_draw_vocabulary_card(display_frame_buffer, card, card_index, app_card_count());
     display_log("[ui] card refresh start\r\n");
 
-    if (epaper_2in15g_display(display_frame_buffer)) {
+    const bool refresh_ok = epaper_2in15g_display(display_frame_buffer);
+
+    if (refresh_ok) {
         display_log("[ui] card refresh done busy=%lu\r\n",
                     (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
         vTaskDelay(pdMS_TO_TICKS(10000));
@@ -119,6 +128,9 @@ static void refresh_vocabulary_card(size_t card_index, bool *panel_awake) {
         display_log("[ui] card refresh timeout busy=%lu\r\n",
                     (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
     }
+
+    app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
+    return refresh_ok;
 }
 
 void app_display_init(app_display_log_fn_t log_fn) {
@@ -154,12 +166,17 @@ void app_display_request_sleep(void) {
 }
 
 void app_display_request_card(const char *command_name, size_t card_index) {
+    latest_card_request_generation++;
+
     const display_request_t request = {
         .type = DISPLAY_REQUEST_CARD_SHOW,
         .card_index = card_index,
+        .card_request_generation = latest_card_request_generation,
     };
 
     configASSERT(display_queue != NULL);
+
+    app_events_set_bits(APP_EVENT_CARD_DIRTY);
 
     const BaseType_t result = xQueueOverwrite(display_queue, &request);
     configASSERT(result == pdPASS);
@@ -202,7 +219,10 @@ static void display_task(void *params) {
         case DISPLAY_REQUEST_TEST_PATTERN:
             display_log("[ui] test pattern requested\r\n");
 
+            app_events_set_bits(APP_EVENT_DISPLAY_BUSY);
+
             if (!prepare_display_panel()) {
+                app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
                 break;
             }
 
@@ -221,12 +241,17 @@ static void display_task(void *params) {
                 display_log("[ui] display timeout busy=%lu\r\n",
                             (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
             }
+
+            app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
             break;
 
         case DISPLAY_REQUEST_CLEAR_WHITE:
             display_log("[ui] clear white requested\r\n");
 
+            app_events_set_bits(APP_EVENT_DISPLAY_BUSY);
+
             if (!prepare_display_panel()) {
+                app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
                 break;
             }
 
@@ -244,12 +269,16 @@ static void display_task(void *params) {
                 display_log("[ui] clear timeout busy=%lu\r\n",
                             (unsigned long)(epaper_2in15g_busy_level() ? 1 : 0));
             }
+
+            app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
             break;
 
         case DISPLAY_REQUEST_SLEEP:
             if (panel_awake) {
+                app_events_set_bits(APP_EVENT_DISPLAY_BUSY);
                 epaper_2in15g_sleep();
                 panel_awake = false;
+                app_events_clear_bits(APP_EVENT_DISPLAY_BUSY);
                 display_log("[ui] panel sleep requested\r\n");
             } else {
                 display_log("[ui] panel already asleep\r\n");
@@ -259,7 +288,10 @@ static void display_task(void *params) {
         case DISPLAY_REQUEST_CARD_SHOW:
             current_card_index = request.card_index % app_card_count();
             display_log("[ui] card show requested\r\n");
-            refresh_vocabulary_card(current_card_index, &panel_awake);
+            if (refresh_vocabulary_card(current_card_index, &panel_awake) &&
+                (request.card_request_generation == latest_card_request_generation)) {
+                app_events_clear_bits(APP_EVENT_CARD_DIRTY);
+            }
             break;
         }
     }

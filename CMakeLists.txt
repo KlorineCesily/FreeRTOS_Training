@@ -42,6 +42,7 @@ add_executable(FreeRTOS_Training
         app_console.c
         app_display.c
         app_draw.c
+        app_events.c
         app_font.c
         app_init.c
         app_log.c

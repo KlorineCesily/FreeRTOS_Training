@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 
+#include "app_events.h"
 #include "app_log.h"
 
 #include "queue.h"
@@ -18,7 +19,6 @@ enum {
 };
 
 static QueueHandle_t sample_queue = NULL;
-static volatile bool detail_logs_enabled = false;
 static TaskHandle_t producer_task_handle = NULL;
 static TaskHandle_t consumer_task_handle = NULL;
 static TaskHandle_t event_task_handle = NULL;
@@ -45,7 +45,7 @@ static void producer_task(void *params) {
         };
 
         if (xQueueSend(sample_queue, &message, pdMS_TO_TICKS(100)) == pdPASS) {
-            if (detail_logs_enabled) {
+            if (app_sample_detail_logs_enabled()) {
                 app_log_printf("[producer] seq=%lu tick=%lu\r\n",
                                (unsigned long)message.sequence,
                                (unsigned long)message.produced_at);
@@ -71,7 +71,7 @@ static void consumer_task(void *params) {
             const TickType_t now = xTaskGetTickCount();
             processed_count++;
 
-            if (detail_logs_enabled) {
+            if (app_sample_detail_logs_enabled()) {
                 app_log_printf("[consumer] seq=%lu produced_at=%lu latency=%lu\r\n",
                                (unsigned long)message.sequence,
                                (unsigned long)message.produced_at,
@@ -82,7 +82,7 @@ static void consumer_task(void *params) {
                 const BaseType_t result = xTaskNotifyGive(event_task_handle);
                 configASSERT(result == pdPASS);
 
-                if (detail_logs_enabled) {
+                if (app_sample_detail_logs_enabled()) {
                     app_log_printf("[consumer] notified event task at sample=%lu\r\n",
                                    (unsigned long)processed_count);
                 }
@@ -101,7 +101,7 @@ static void event_task(void *params) {
 
         if (pending_before_take > 0) {
             handled_batches++;
-            if (detail_logs_enabled) {
+            if (app_sample_detail_logs_enabled()) {
                 app_log_printf("[event] batch=%lu samples_reported=%lu pending_before_take=%lu\r\n",
                                (unsigned long)handled_batches,
                                (unsigned long)(handled_batches * SAMPLE_EVENT_INTERVAL),
@@ -139,11 +139,11 @@ void app_sample_start(configSTACK_DEPTH_TYPE stack_depth,
 }
 
 void app_sample_set_detail_logs_enabled(bool enabled) {
-    detail_logs_enabled = enabled;
+    app_events_set_diag_enabled(enabled);
 }
 
 bool app_sample_detail_logs_enabled(void) {
-    return detail_logs_enabled;
+    return app_events_diag_enabled();
 }
 
 UBaseType_t app_sample_queue_messages_waiting(void) {

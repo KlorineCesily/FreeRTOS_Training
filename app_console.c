@@ -8,6 +8,7 @@
 
 #include "app_card.h"
 #include "app_display.h"
+#include "app_events.h"
 #include "app_log.h"
 #include "app_monitor.h"
 #include "app_sample.h"
@@ -33,9 +34,14 @@ static void print_console_help(void) {
 }
 
 static void print_console_stats(void) {
-    app_log_printf("[console] tick=%lu detail_logs=%lu queue=%lu/%lu display_queue=%lu/%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu\r\n",
+    const EventBits_t event_bits = app_events_get_bits();
+
+    app_log_printf("[console] tick=%lu events=0x%lx busy=%lu dirty=%lu diag=%lu queue=%lu/%lu display_queue=%lu/%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu\r\n",
                    (unsigned long)xTaskGetTickCount(),
-                   (unsigned long)(app_sample_detail_logs_enabled() ? 1 : 0),
+                   (unsigned long)event_bits,
+                   (unsigned long)((event_bits & APP_EVENT_DISPLAY_BUSY) ? 1 : 0),
+                   (unsigned long)((event_bits & APP_EVENT_CARD_DIRTY) ? 1 : 0),
+                   (unsigned long)((event_bits & APP_EVENT_DIAG_ENABLED) ? 1 : 0),
                    (unsigned long)app_sample_queue_messages_waiting(),
                    (unsigned long)app_sample_queue_spaces_available(),
                    (unsigned long)app_display_queue_messages_waiting(),

@@ -2,6 +2,7 @@
 
 #include "app_console.h"
 #include "app_display.h"
+#include "app_events.h"
 #include "app_log.h"
 #include "app_sample.h"
 
@@ -29,8 +30,14 @@ static void monitor_task(void *params) {
             continue;
         }
 
-        app_log_printf("[monitor] tick=%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu queue=%lu/%lu display_queue=%lu/%lu notify=task-local\r\n",
+        const EventBits_t event_bits = app_events_get_bits();
+
+        app_log_printf("[monitor] tick=%lu events=0x%lx busy=%lu dirty=%lu diag=%lu stack_p=%lu stack_c=%lu stack_e=%lu stack_ui=%lu stack_cli=%lu stack_m=%lu queue=%lu/%lu display_queue=%lu/%lu notify=task-local\r\n",
                        (unsigned long)xTaskGetTickCount(),
+                       (unsigned long)event_bits,
+                       (unsigned long)((event_bits & APP_EVENT_DISPLAY_BUSY) ? 1 : 0),
+                       (unsigned long)((event_bits & APP_EVENT_CARD_DIRTY) ? 1 : 0),
+                       (unsigned long)((event_bits & APP_EVENT_DIAG_ENABLED) ? 1 : 0),
                        (unsigned long)app_sample_producer_stack_high_water_mark(),
                        (unsigned long)app_sample_consumer_stack_high_water_mark(),
                        (unsigned long)app_sample_event_stack_high_water_mark(),

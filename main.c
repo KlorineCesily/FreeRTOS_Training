@@ -5,6 +5,7 @@
 
 #include "app_console.h"
 #include "app_display.h"
+#include "app_events.h"
 #include "app_init.h"
 #include "app_log.h"
 #include "app_monitor.h"
@@ -46,6 +47,7 @@ static void startup_task(void *params) {
     wait_for_serial_monitor();
 
     app_log_init();
+    app_events_init();
     app_log_printf("Starting FreeRTOS e-paper UI task demo with mutex-protected logging\r\n");
 
     app_sample_start(DEFAULT_TASK_STACK_WORDS,
